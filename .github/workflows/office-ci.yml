@@ -1,0 +1,32 @@
+name: TARIQ Office - Build
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'office/**'
+      - '.github/workflows/office-ci.yml'
+  pull_request:
+    paths:
+      - 'office/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: office
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: office/package-lock.json
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Docker image build
+        run: docker build -t tariq-office:test .
