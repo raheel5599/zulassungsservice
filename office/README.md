@@ -1,41 +1,44 @@
-# TARIQ Office
+# TARIQ portals
 
-React/TypeScript Office application based on all ten images in TARIQ_Office_Vorlagen.zip. Uses the original Logo UG.png, copied unchanged to public/logo-ug.png.
+Office `/`, dealer `/haendler`, driver `/fahrer` share one same-origin API. Production: https://zulassung.tariq-itconsulting.de. The transparent UG logo is used in all three portals.
 
-## Start and build
+## Connected workflow
 
-Run `npm ci` and `npm run build` inside office. Development: `npm run dev`.
+1. An administrator creates dealer and driver invitations under Mitarbeiter / Händler. Links expire after 24 hours and are not sent automatically.
+2. A dealer creates an order and optionally requests collection. Office sees it, reviews uploaded documents and assigns a collection or return to a driver.
+3. The driver sees assigned orders and documents. Collection completion sets the shared order to Abgeholt. Return completion requires item selection, recipient name, signature and a task-bound uploaded photograph; it sets Ausgeliefert.
+4. Document review, plate production, transport status and event history synchronize while the portal is visible (five-second polling). Conflicting writes are rejected with a refresh message.
 
-## Included views
+## First setup
 
-Dashboard, order list and status drawer, six-step new-order form, customers, document review, tours, invoices, license plate production, staff, message drafts and settings. Lists support search, row selection and their primary state changes.
+The API creates a random single-use code in its persistent data volume. Read it privately on the server:
 
-## Data and access
+```sh
+cd /opt/tariq-zulassungsservice/office
+docker compose -f compose.yml exec -T api cat /data/setup-code
+```
 
-This is a frontend working version with fictional sample data. Orders, customers, document metadata, tours, invoice statuses, plate production, staff and settings are stored in this browser's localStorage. There is no shared database, authentication, server upload, payment processing or live messaging yet. Staff role changes do not enforce access restrictions. Invoice export is CSV/text, not an issued accounting document. Document upload records metadata only. No message is sent to a real recipient.
+Open the portal and enter the code, your name, a username and a password of at least 12 characters. The code is deleted after creating the administrator. Never put the code, invitation tokens or passwords in Actions logs. There are no shared default credentials. Existing browser sample data are not imported.
 
-## Deployment
+## Storage and access
 
-The manual office-deploy.yml workflow connects to the confirmed Hetzner host as fpadmin. SSH secrets remain in GitHub Actions. Docker publishes port 8091; ensure the host/network firewall permits the intended access. Use only sample data until authentication and HTTPS have been implemented.
+Python 3.12 standard library + SQLite WAL and protected uploads in Docker volume `portal_data`. Back up the entire `/data` directory with the API stopped, or use SQLite's online backup API and a consistent upload backup. Do not run `docker compose down -v` on production. Application rebuilds retain the volume.
 
-Reference artwork in public/office-reference.webp is used as clipped decorative background, while the application UI is rendered by React.
+Passwords use salted PBKDF2-SHA256 (600,000 rounds). Sessions are revocable, expire after 12 hours and use Secure/HttpOnly/SameSite cookies. Mutation requests require the exact configured Origin. The API is reachable only on the internal Compose network; nginx proxies `/api`. Dealers see their orders; drivers see assigned transports and associated documents; Office sees all operations; only admins create accounts. Files have authenticated download routes, randomized disk names, type/size checks and no public bucket. Updates use optimistic versions. Personal preferences and unfinished drafts are isolated per user.
 
+## Deliberately unfinished modules
 
-## Dealer portal
+Invoices/payment processing, outgoing chat/email, external registration/insurance APIs, vehicle assignment, route optimization and live tracking are not connected. Sample invoice and vehicle sections are labelled. Chat replies are private drafts, while order activity notifications are shared. Daily vehicle checks are personal records and are not an Office authorization mechanism. Account recovery, invitation renewal and disabling accounts still need administrator tooling before broader rollout.
 
-Open /haendler for the dealer portal based on all eight images in TARIQ_Haendlerportal_Vorlagen.zip. Includes dashboard, searchable/filterable orders, order details and timeline, order creation/editing, document uploads with preview, pickup requests, invoice overview, message drafts and dealer settings. Links to individual orders use /haendler?auftrag=ID. The Office remains at /.
+## Local development and checks
 
-Dealer data is a separate fictional sample workspace in localStorage. Uploaded PDFs and images are kept locally in IndexedDB, never uploaded to the server. Files are limited to 10 MB; uploaded content is previewed in a sandbox. There is no dealer authentication, tenant isolation, live Office synchronization or real email transmission yet. Dealer screens cannot change Office status or payment confirmations. An invoice displayed here is a sample, not a legally issued invoice.
+Inside `office`: `npm ci`, `npm run build`, `python -m unittest discover -s api -v`.
+Run the API with a private local data directory and development-only cookie settings:
 
-QA: TypeScript and production build passed. All nine dealer screens passed React server-render smoke checks. Browser visual and interaction QA was unavailable in this runtime.
+```sh
+DATA_DIR=/tmp/tariq-portal-dev PUBLIC_ORIGIN=http://localhost:5173 COOKIE_SECURE=0 python api/server.py
+```
 
+In another terminal run `npm run dev -- --host localhost`; Vite proxies `/api` to localhost:8000. Production always uses HTTPS and secure cookies. Do not use test passwords or fixtures in production.
 
-## Driver portal
-
-Open /fahrer for the driver portal based on all eight images in TARIQ_Fahrerportal_Vorlagen.zip. Includes dashboard, tour overview, assigned jobs, stop status, a clearly labeled schematic route map, handovers, vehicle checks, message drafts and settings. Direct pages use /fahrer?seite=PAGE.
-
-Starting a tour requires today's completed vehicle check. Every checklist item must be confirmed individually. Mileage cannot decrease. A handover requires selected items, a recipient name, a photograph and a drawn signature before it can be confirmed locally. Delivery stops that have a related handover cannot be completed before that handover is confirmed. Signatures are local acknowledgements, not a qualified electronic-signature service.
-
-Driver state is separate sample data in localStorage; photographs are stored locally in IndexedDB (up to 10 MB each). These are not sent to Office or real recipients. Maps links open Google Maps or Apple Maps for navigation. The in-app route is explicitly schematic and does not represent live GPS, actual route distances or traffic estimates. Phone actions require a phone number in the job; demo contacts contain none. No camera QR recognition or OCR is claimed; manual job lookup and document photography are supported. No real authentication or authorization, tenant isolation, push notifications or Office synchronization exists yet.
-
-QA: TypeScript and production build pass; all eight driver screens passed server-render smoke checks. Browser visual QA, touch-signature input, device camera and IndexedDB persistence could not be exercised in this runtime. Layout includes iPad breakpoints and a phone bottom navigation with safe-area padding.
+Compose starts the API health check before nginx. GitHub Actions builds and tests the frontend and API; production deployment updates the existing Hetzner Compose project and Caddy configuration. Port 8091 is bound to loopback only.

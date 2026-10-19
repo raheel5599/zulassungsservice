@@ -15,6 +15,20 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate connected portals before deployment
+        working-directory: office
+        run: |
+          python -m unittest discover -s api -v
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run test:views
       - name: Check required secrets
         env:
           HOST: 167.233.32.243

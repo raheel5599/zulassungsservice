@@ -3,15 +3,46 @@ services:
     build:
       context: .
     restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8091:8080"
     networks:
       web:
         aliases:
           - tariq-zulassung-office
+      backend:
     security_opt:
       - no-new-privileges:true
+  api:
+    build:
+      context: ./api
+    restart: unless-stopped
+    environment:
+      PUBLIC_ORIGIN: https://zulassung.tariq-itconsulting.de
+      COOKIE_SECURE: "1"
+      TZ: Europe/Berlin
+    volumes:
+      - portal_data:/data
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 networks:
   web:
     external: true
     name: fahrschulpilot_web
+  backend:
+    internal: true
+volumes:
+  portal_data:

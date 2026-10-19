@@ -22,9 +22,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: API integration tests
+        run: python -m unittest discover -s api -v
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Build
         run: npm run build
+      - name: Render all portal views
+        run: npm run test:views
       - name: Docker image build
         run: docker build -t tariq-office:test .
+      - name: API Docker image build
+        run: docker build -t tariq-portal-api:test api
