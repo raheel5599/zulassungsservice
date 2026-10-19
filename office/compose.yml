@@ -1,0 +1,9 @@
+services:
+  tariq-office:
+    build:
+      context: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8091:8080"
+    security_opt:
+      - no-new-privileges:true
