@@ -1,30 +1,21 @@
-# TARIQ Office – Entwicklungsstand
+# TARIQ Office
 
-Office-Dashboard (erste Demo) nach den Designvorlagen. Noch kein produktives Backend, keine Anmeldung und keine persistenten Daten. Bitte keine echten Ausweis- oder Kundendokumente eingeben.
+React/TypeScript Office application based on all ten images in TARIQ_Office_Vorlagen.zip. Uses the original Logo UG.png, copied unchanged to public/logo-ug.png.
 
-## Lokal starten
+## Start and build
 
-```bash
-cd office
-npm install
-npm run dev
-```
+Run `npm ci` and `npm run build` inside office. Development: `npm run dev`.
 
-## Docker / Hetzner
+## Included views
 
-```bash
-cd office
-docker compose -f compose.yml up -d --build
-```
+Dashboard, order list and status drawer, six-step new-order form, customers, document review, tours, invoices, license plate production, staff, message drafts and settings. Lists support search, row selection and their primary state changes.
 
-Der Container ist nur über 127.0.0.1:8091 auf dem Server erreichbar. Für eine öffentliche Domain ist ein gesonderter HTTPS-Reverse-Proxy erforderlich, z. B. ein Caddy-Eintrag auf `127.0.0.1:8091`. **Nicht ohne Login und Schutzmaßnahmen öffentlich produktiv bereitstellen**.
+## Data and access
 
-## GitHub Actions
+This is a frontend working version with fictional sample data. Orders, customers, document metadata, tours, invoice statuses, plate production, staff and settings are stored in this browser's localStorage. There is no shared database, authentication, server upload, payment processing or live messaging yet. Staff role changes do not enforce access restrictions. Invoice export is CSV/text, not an issued accounting document. Document upload records metadata only. No message is sent to a real recipient.
 
-- `TARIQ Office - Build`: Build-Test bei Code-Änderungen.
-- `TARIQ Office - Hetzner Deploy (manuell)`: nur nach manueller Freigabe.
-- Benötigte Repository Secrets: `HETZNER_HOST`, `HETZNER_USER`, `HETZNER_SSH_KEY`, `HETZNER_KNOWN_HOSTS`.
-- Der SSH-Benutzer braucht Docker-Rechte und Schreibrechte unter `/opt/tariq-zulassungsservice`. Kein Root-SSH erforderlich.
-- Für `HETZNER_KNOWN_HOSTS` den SSH-Hostschlüssel **außerhalb des Workflows auf einem vertrauenswürdigen Weg verifizieren**, nicht blind aus ssh-keyscan übernehmen.
+## Deployment
 
-Das UG-Logo wird aus dem übergeordneten Repository übernommen.
+The manual office-deploy.yml workflow connects to the confirmed Hetzner host as fpadmin. SSH secrets remain in GitHub Actions. Docker publishes port 8091; ensure the host/network firewall permits the intended access. Use only sample data until authentication and HTTPS have been implemented.
+
+Reference artwork in public/office-reference.webp is used as clipped decorative background, while the application UI is rendered by React.
