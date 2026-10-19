@@ -4,6 +4,14 @@ services:
       context: .
     restart: unless-stopped
     ports:
-      - "8091:8080"
+      - "127.0.0.1:8091:8080"
+    networks:
+      web:
+        aliases:
+          - tariq-zulassung-office
     security_opt:
       - no-new-privileges:true
+networks:
+  web:
+    external: true
+    name: fahrschulpilot_web
