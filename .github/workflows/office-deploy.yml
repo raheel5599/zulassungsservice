@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Check required secrets
         env:
-          HOST: ${{ secrets.HETZNER_HOST }}
+          HOST: 167.233.32.243
           USER: fpadmin
           KEY: ${{ secrets.HETZNER_SSH_KEY }}
           KNOWN: ${{ secrets.HETZNER_KNOWN_HOSTS }}
@@ -20,7 +20,7 @@ jobs:
           test -n "$HOST" && test -n "$USER" && test -n "$KEY" && test -n "$KNOWN" || (echo "Hetzner-Secrets fehlen"; exit 1)
       - name: Deploy with SSH
         env:
-          HOST: ${{ secrets.HETZNER_HOST }}
+          HOST: 167.233.32.243
           USER: fpadmin
           KEY: ${{ secrets.HETZNER_SSH_KEY }}
           KNOWN: ${{ secrets.HETZNER_KNOWN_HOSTS }}
