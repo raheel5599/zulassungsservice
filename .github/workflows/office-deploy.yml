@@ -1,0 +1,44 @@
+name: TARIQ Office - Hetzner Deploy (manuell)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tariq-office-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        env:
+          HOST: ${{ secrets.HETZNER_HOST }}
+          USER: ${{ secrets.HETZNER_USER }}
+          KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          KNOWN: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+        run: |
+          test -n "$HOST" && test -n "$USER" && test -n "$KEY" && test -n "$KNOWN" || (echo "Hetzner-Secrets fehlen"; exit 1)
+      - name: Deploy with SSH
+        env:
+          HOST: ${{ secrets.HETZNER_HOST }}
+          USER: ${{ secrets.HETZNER_USER }}
+          KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          KNOWN: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" 'set -eu
+            mkdir -p /opt/tariq-zulassungsservice
+            if [ ! -d /opt/tariq-zulassungsservice/.git ]; then
+              git clone https://github.com/raheel5599/zulassungsservice.git /opt/tariq-zulassungsservice
+            fi
+            cd /opt/tariq-zulassungsservice
+            git fetch origin main
+            git checkout -B main origin/main
+            cd office
+            docker compose -f compose.yml up -d --build --remove-orphans
+            docker compose -f compose.yml ps
+          '
