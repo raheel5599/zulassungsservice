@@ -19,3 +19,12 @@ This is a frontend working version with fictional sample data. Orders, customers
 The manual office-deploy.yml workflow connects to the confirmed Hetzner host as fpadmin. SSH secrets remain in GitHub Actions. Docker publishes port 8091; ensure the host/network firewall permits the intended access. Use only sample data until authentication and HTTPS have been implemented.
 
 Reference artwork in public/office-reference.webp is used as clipped decorative background, while the application UI is rendered by React.
+
+
+## Dealer portal
+
+Open /haendler for the dealer portal based on all eight images in TARIQ_Haendlerportal_Vorlagen.zip. Includes dashboard, searchable/filterable orders, order details and timeline, order creation/editing, document uploads with preview, pickup requests, invoice overview, message drafts and dealer settings. Links to individual orders use /haendler?auftrag=ID. The Office remains at /.
+
+Dealer data is a separate fictional sample workspace in localStorage. Uploaded PDFs and images are kept locally in IndexedDB, never uploaded to the server. Files are limited to 10 MB; uploaded content is previewed in a sandbox. There is no dealer authentication, tenant isolation, live Office synchronization or real email transmission yet. Dealer screens cannot change Office status or payment confirmations. An invoice displayed here is a sample, not a legally issued invoice.
+
+QA: TypeScript and production build passed. All nine dealer screens passed React server-render smoke checks. Browser visual and interaction QA was unavailable in this runtime.
