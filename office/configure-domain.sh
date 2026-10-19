@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 caddy_container=fahrschulpilot-caddy-1
-domain=zulassung.tariqit-consulting.de
+domain=zulassung.tariq-itconsulting.de
 caddy_source=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}' "$caddy_container")
 if [ -z "$caddy_source" ]; then
   caddy_dir=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy"}}{{.Source}}{{end}}{{end}}' "$caddy_container")
@@ -14,8 +14,8 @@ trap 'rm -f "$candidate"' EXIT
 python3 - "$caddy_source" "$candidate" <<'PY'
 import pathlib,sys,re
 source=pathlib.Path(sys.argv[1]).read_text()
-domain="zulassung.tariqit-consulting.de"
-block='''zulassung.tariqit-consulting.de {
+domain="zulassung.tariq-itconsulting.de"
+block='''zulassung.tariq-itconsulting.de {
   encode zstd gzip
   header {
     X-Content-Type-Options "nosniff"
@@ -26,7 +26,10 @@ block='''zulassung.tariqit-consulting.de {
   reverse_proxy tariq-zulassung-office:8080
 }
 '''
-if re.search(r'(?m)^\s*zulassung\.tariqit-consulting\.de\s*\{',source):
+# Remove only the exact obsolete block previously managed by this script.
+obsolete=block.replace("zulassung.tariq-itconsulting.de","zulassung.tariqit-consulting.de")
+source=source.replace(obsolete,"")
+if re.search(r'(?m)^\s*zulassung\.tariq-itconsulting\.de\s*\{',source):
     if "reverse_proxy tariq-zulassung-office:8080" not in source:
         raise SystemExit("Existing domain route differs; refusing to overwrite it")
     pathlib.Path(sys.argv[2]).write_text(source)
