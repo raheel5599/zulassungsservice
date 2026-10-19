@@ -1,0 +1,45 @@
+name: Domain diagnostics
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/domain-diagnostics.yml'
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Public DNS and HTTPS
+        run: |
+          echo "DNS records"
+          dig zulassung.tariqit-consulting.de A +noall +comments +answer +authority
+          dig zulassung.tariqit-consulting.de AAAA +noall +comments +answer +authority
+          echo "Nameservers"
+          dig tariqit-consulting.de NS +short
+          for resolver in 1.1.1.1 8.8.8.8; do
+            echo "Resolver $resolver"
+            dig @"$resolver" zulassung.tariqit-consulting.de A +noall +comments +answer +authority
+          done
+          echo "HTTPS directly to confirmed server"
+          curl -IvsS --connect-timeout 8 --max-time 15 --resolve zulassung.tariqit-consulting.de:443:167.233.32.243 https://zulassung.tariqit-consulting.de/ || true
+      - name: Server and Caddy diagnostics
+        env:
+          DEPLOY_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          PINNED_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/domain_key
+          printf '%s\n' "$PINNED_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/domain_key ~/.ssh/known_hosts
+          ssh -i ~/.ssh/domain_key -o BatchMode=yes -o StrictHostKeyChecking=yes fpadmin@167.233.32.243 'set -u
+            echo "Server DNS"
+            getent ahostsv4 zulassung.tariqit-consulting.de || true
+            echo "Local Office response"
+            curl -sS -o /dev/null -w "%{http_code}\n" --max-time 8 http://127.0.0.1:8091/haendler || true
+            echo "Caddy HTTPS"
+            curl -IvsS --connect-timeout 5 --max-time 10 --resolve zulassung.tariqit-consulting.de:443:127.0.0.1 https://zulassung.tariqit-consulting.de/ || true
+            echo "Domain certificate logs"
+            docker logs --since 90m fahrschulpilot-caddy-1 2>&1 | grep "zulassung.tariqit-consulting.de" | tail -n 15 || true
+          '
