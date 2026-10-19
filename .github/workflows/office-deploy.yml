@@ -1,6 +1,11 @@
-name: TARIQ Office - Hetzner Deploy (manuell)
+name: TARIQ Office - Hetzner Deploy
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'office/**'
+      - '.github/workflows/office-deploy.yml'
 permissions:
   contents: read
 concurrency:
@@ -41,4 +46,5 @@ jobs:
             cd office
             docker compose -f compose.yml up -d --build --remove-orphans
             docker compose -f compose.yml ps
+            bash configure-domain.sh
           '
