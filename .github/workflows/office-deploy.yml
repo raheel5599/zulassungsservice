@@ -60,5 +60,8 @@ jobs:
             cd office
             docker compose -f compose.yml up -d --build --remove-orphans
             docker compose -f compose.yml ps
+            echo "Checking the portal API through nginx"
+            test "$(curl -fsS --max-time 10 http://127.0.0.1:8091/api/health)" = "{\"ok\": true}"
             bash configure-domain.sh
+            test "$(curl -fsS --max-time 10 --resolve zulassung.tariq-itconsulting.de:443:127.0.0.1 https://zulassung.tariq-itconsulting.de/api/health)" = "{\"ok\": true}"
           '

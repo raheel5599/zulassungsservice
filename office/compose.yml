@@ -26,7 +26,9 @@ services:
     volumes:
       - portal_data:/data
     networks:
-      - backend
+      backend:
+        aliases:
+          - tariq-zulassung-api
     read_only: true
     tmpfs:
       - /tmp
