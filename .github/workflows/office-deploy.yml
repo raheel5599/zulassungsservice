@@ -13,7 +13,7 @@ jobs:
       - name: Check required secrets
         env:
           HOST: ${{ secrets.HETZNER_HOST }}
-          USER: ${{ secrets.HETZNER_USER }}
+          USER: fpadmin
           KEY: ${{ secrets.HETZNER_SSH_KEY }}
           KNOWN: ${{ secrets.HETZNER_KNOWN_HOSTS }}
         run: |
@@ -21,7 +21,7 @@ jobs:
       - name: Deploy with SSH
         env:
           HOST: ${{ secrets.HETZNER_HOST }}
-          USER: ${{ secrets.HETZNER_USER }}
+          USER: fpadmin
           KEY: ${{ secrets.HETZNER_SSH_KEY }}
           KNOWN: ${{ secrets.HETZNER_KNOWN_HOSTS }}
         run: |
