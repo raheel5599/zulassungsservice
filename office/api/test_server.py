@@ -44,9 +44,9 @@ class PortalTests(unittest.TestCase):
   self.call('PATCH','/api/orders/'+o['id'],{'patch':{'status':'Fertig'},'expectedVersion':1},self.dealer,403)
   self.call('PATCH','/api/orders/'+o['id'],{'patch':{'dealerId':self.other_id},'expectedVersion':1},self.dealer,403)
  def test_03_status_and_version_conflict(self):
-  o=self.order();updated,_=self.call('PATCH','/api/orders/'+o['id'],{'patch':{'status':'Bei Behörde'},'expectedVersion':1},self.office);self.assertEqual(updated['status'],'Bei Behörde')
+  o=self.order();updated,_=self.call('PATCH','/api/orders/'+o['id'],{'patch':{'status':'In Prüfung'},'expectedVersion':1},self.office);self.assertEqual(updated['status'],'In Prüfung')
   self.call('PATCH','/api/orders/'+o['id'],{'patch':{'plate':'FB B 222'},'expectedVersion':1},self.office,409)
-  visible=next(x for x in self.snapshot(self.dealer)['orders'] if x['id']==o['id']);self.assertEqual(visible['status'],'Bei Behörde')
+  visible=next(x for x in self.snapshot(self.dealer)['orders'] if x['id']==o['id']);self.assertEqual(visible['status'],'In Prüfung')
  def test_04_driver_assignment_and_collection(self):
   o=self.order();self.call('POST','/api/orders/'+o['id']+'/assign',{'driverId':self.driver_id},self.dealer,403)
   task=self.assign(o);self.assertTrue(any(t['id']==task['id'] for t in self.snapshot(self.driver)['stops']));self.assertFalse(any(t['id']==task['id'] for t in self.snapshot(self.driver_b)['stops']));self.assertTrue(any(t['id']==task['id'] for t in self.snapshot(self.dealer)['stops']))
@@ -94,5 +94,99 @@ class PortalTests(unittest.TestCase):
   type(self).thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();type(self).base='http://127.0.0.1:'+str(self.server.server_port)
   self.assertTrue(any(x['id']==o['id'] for x in self.snapshot(self.admin)['orders']))
   self.assertFalse((Path(self.tmp.name)/'setup-code').exists())
+
+ def authority_config(self,name=None,mode='Termin',limit=None):
+  name=name or 'Teststelle-'+uuid.uuid4().hex[:8]
+  return self.call('PUT','/api/authorities',{'name':name,'mode':mode,'weeklyMinimum':20,'weeklyLimit':limit,'expectedVersion':0},self.office)[0]
+ def visit(self,config,orders,day=None,clock='09:00',expect=201):
+  return self.call('POST','/api/authority-visits',{'authorityId':config['id'],'kind':config['mode'],'orderIds':[o['id'] for o in orders],'date':day or self.mod.date.today().isoformat(),'time':clock,'confirmation':'REF-123','note':'Testnotiz','address':'Testschalter'},self.office,expect)[0]
+ def current_order(self,oid):return next(o for o in self.snapshot(self.admin)['orders'] if o['id']==oid)
+ def order_status(self,oid,status):
+  o=self.current_order(oid)
+  return self.call('PATCH','/api/orders/'+oid,{'expectedVersion':o['_version'],'patch':{'status':status}},self.office)[0]
+ def counter(self,config,day=None):
+  q=urllib.parse.urlencode({'id':config['id'],'date':day or self.mod.date.today().isoformat()})
+  return self.call('GET','/api/authorities/counter?'+q,cookie=self.office)[0]
+ def test_12_appointment_links_edit_cancel_and_acl(self):
+  config=self.authority_config();o=self.order();v=self.visit(config,[o]);linked=self.current_order(o['id']);self.assertEqual(linked['authorityVisit']['id'],v['id'])
+  self.assertTrue(any(x['id']==v['id'] for x in self.snapshot(self.admin)['authorityVisits']))
+  for cookie in [self.dealer,self.driver]:
+   snap=self.snapshot(cookie);self.assertEqual(snap['authorityVisits'],[]);self.assertEqual(snap['authorities'],[])
+   self.call('POST','/api/authority-visits',{},cookie,403)
+   self.call('PUT','/api/authorities',{},cookie,403)
+   self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'cancel','expectedVersion':1},cookie,403)
+  self.visit(config,[o],clock='11:00',expect=409)
+  self.call('PATCH','/api/orders/'+o['id'],{'patch':{'office':'Andere Stelle'},'expectedVersion':linked['_version']},self.dealer,409)
+  v,_=self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'update','patch':{'time':'10:30','confirmation':'NEW-REF'},'expectedVersion':1},self.office)
+  self.assertEqual(self.current_order(o['id'])['authorityVisit']['time'],'10:30')
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'cancel','expectedVersion':1},self.office,409)
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'cancel','expectedVersion':2},self.office)
+  self.assertNotIn('authorityVisit',self.current_order(o['id']));self.assertEqual(self.counter(config)['submitted'],0)
+ def test_13_minimum_is_not_a_limit_and_submission_statuses(self):
+  config=self.authority_config(mode='Händlerschalter');orders=[self.order() for _ in range(21)];v=self.visit(config,orders)
+  count=self.counter(config);self.assertEqual((count['submitted'],count['reserved'],count['remainingMinimum'],count['remainingCapacity']),(0,21,20,None))
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':1},self.office,409)
+  for o in orders:self.order_status(o['id'],'Vollständig geprüft')
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':1},self.office)
+  count=self.counter(config);self.assertEqual((count['submitted'],count['reserved'],count['remainingMinimum']),(21,0,0))
+  o=self.current_order(orders[0]['id']);self.assertEqual(o['status'],'Bei Behörde');self.assertIn('authoritySubmittedAt',o)
+  self.order_status(o['id'],'Fertig');self.order_status(o['id'],'Unterlagen zurück im Office')
+  self.assertEqual(self.current_order(o['id'])['status'],'Unterlagen zurück im Office')
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'cancel','expectedVersion':2},self.office,409)
+  nextweek=(self.mod.date.fromisoformat(count['week'])+self.mod.timedelta(days=7)).isoformat();self.assertEqual(self.counter(config,nextweek)['submitted'],0)
+ def test_14_capacity_cancel_and_atomic_reservations(self):
+  config=self.authority_config(mode='Händlerschalter',limit=20);orders=[self.order() for _ in range(21)];v=self.visit(config,orders[:19]);self.assertEqual(self.counter(config)['remainingCapacity'],1)
+  from concurrent.futures import ThreadPoolExecutor
+  def race(order):
+   b={'authorityId':config['id'],'kind':config['mode'],'orderIds':[order['id']],'date':self.mod.date.today().isoformat(),'time':'10:00'}
+   req=urllib.request.Request(self.base+'/api/authority-visits',data=json.dumps(b).encode(),method='POST',headers={'Origin':'http://test.local','Cookie':self.office,'Content-Type':'application/json'})
+   try:r=urllib.request.urlopen(req)
+   except urllib.error.HTTPError as e:r=e
+   r.read();return r.status
+  with ThreadPoolExecutor(max_workers=2) as pool:statuses=sorted(pool.map(race,orders[19:]))
+  self.assertEqual(statuses,[201,409]);self.assertEqual(self.counter(config)['remainingCapacity'],0)
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'cancel','expectedVersion':1},self.office);self.assertEqual(self.counter(config)['remainingCapacity'],19)
+ def test_15_modes_cannot_be_mixed(self):
+  config=self.authority_config();o=self.order();v=self.visit(config,[o]);body={**config,'mode':'Händlerschalter','expectedVersion':1}
+  self.call('PUT','/api/authorities',body,self.office,409)
+  self.order_status(o['id'],'Vollständig geprüft');self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':1},self.office)
+  config,_=self.call('PUT','/api/authorities',body,self.office);other=self.order();self.visit(config,[other],expect=409)
+  nextweek=(self.mod.date.fromisoformat(self.mod.authority_week(self.mod.date.today().isoformat()))+self.mod.timedelta(days=7)).isoformat()
+  self.visit(config,[other],day=nextweek)
+ def test_16_quality_dates_and_document_changes(self):
+  config=self.authority_config();o=self.order();tomorrow=(self.mod.date.today()+self.mod.timedelta(days=1)).isoformat();v=self.visit(config,[o],day=tomorrow)
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':1},self.office,409)
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'update','patch':{'date':'2026-02-30'},'expectedVersion':1},self.office,400)
+  v,_=self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'update','patch':{'date':self.mod.date.today().isoformat()},'expectedVersion':1},self.office)
+  self.order_status(o['id'],'Vollständig geprüft')
+  f,_=self.call('POST','/api/files',b'%PDF-1.4 Test',self.dealer,201,{'Content-Type':'application/pdf','X-Order-Id':o['id']})
+  self.assertEqual(self.current_order(o['id'])['status'],'In Prüfung')
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':2},self.office,409)
+  current=self.current_order(o['id']);self.call('PATCH','/api/orders/'+o['id'],{'patch':{'status':'Vollständig geprüft'},'expectedVersion':current['_version']},self.office,409)
+  self.call('PATCH','/api/files/'+f['id'],{'patch':{'status':'Freigegeben'},'expectedVersion':1},self.office)
+  self.order_status(o['id'],'Vollständig geprüft');self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':2},self.office)
+ def test_17_collection_retries_preserve_later_workflow(self):
+  o=self.order();task=self.assign(o)
+  self.call('PATCH','/api/stops/'+task['id'],{'patch':{'status':'Erledigt'},'expectedVersion':1},self.driver)
+  self.order_status(o['id'],'Vollständig geprüft')
+  self.call('PATCH','/api/stops/'+task['id'],{'patch':{'status':'Erledigt'},'expectedVersion':2},self.driver)
+  self.assertEqual(self.current_order(o['id'])['status'],'Vollständig geprüft')
+ def test_18_persist_authority_plan_after_restart(self):
+  config=self.authority_config();o=self.order();v=self.visit(config,[o]);self.server.shutdown();self.server.server_close()
+  type(self).server=self.mod.ThreadingHTTPServer(('127.0.0.1',0),self.mod.Handler);type(self).thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();type(self).base='http://127.0.0.1:'+str(self.server.server_port)
+  snap=self.snapshot(self.office);self.assertTrue(any(x['id']==config['id'] for x in snap['authorities']));self.assertTrue(any(x['id']==v['id'] for x in snap['authorityVisits']));self.assertEqual(self.current_order(o['id'])['authorityVisit']['time'],'09:00')
+
+ def test_19_delayed_submission_counts_actual_week(self):
+  config=self.authority_config(mode='Händlerschalter');o=self.order();thisweek=self.mod.date.fromisoformat(self.mod.authority_week(self.mod.date.today().isoformat()));lastweek=(thisweek-self.mod.timedelta(days=7)).isoformat();v=self.visit(config,[o],day=lastweek)
+  self.assertEqual(self.counter(config,lastweek)['reserved'],1);self.assertEqual(self.counter(config)['reserved'],0)
+  self.order_status(o['id'],'Vollständig geprüft');self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':1},self.office)
+  self.assertEqual(self.counter(config,lastweek)['submitted'],0);self.assertEqual(self.counter(config)['submitted'],1)
+
+ def test_20_appointments_can_be_saved_before_orders_exist(self):
+  config=self.authority_config();v=self.visit(config,[])
+  self.assertEqual(v['orderIds'],[])
+  self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'submit','expectedVersion':1},self.office,409)
+  o=self.order();v,_=self.call('PATCH','/api/authority-visits/'+v['id'],{'action':'update','patch':{'orderIds':[o['id']]},'expectedVersion':1},self.office)
+  self.assertEqual(self.current_order(o['id'])['authorityVisit']['id'],v['id'])
 
 if __name__=='__main__':unittest.main()

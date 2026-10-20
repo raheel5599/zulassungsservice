@@ -13,3 +13,5 @@ import './ipad.css';
 import './driver.css';
 
 import './connection.css';
+
+import './authority.css';

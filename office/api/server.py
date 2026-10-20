@@ -1,6 +1,6 @@
 """Same-origin portal API. No external services or public file bucket."""
 import base64, hashlib, hmac, json, os, re, secrets, sqlite3, time, urllib.parse, uuid
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY,order_id TEXT NOT NULL REFE
 CREATE TABLE IF NOT EXISTS states(user_id TEXT NOT NULL REFERENCES users(id),key TEXT NOT NULL,value TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(user_id,key));
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id TEXT,actor_id TEXT NOT NULL,action TEXT NOT NULL,created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reads(user_id TEXT NOT NULL,event_id INTEGER NOT NULL,PRIMARY KEY(user_id,event_id));
+CREATE TABLE IF NOT EXISTS authority_configs(id TEXT PRIMARY KEY,payload TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS authority_visits(id TEXT PRIMARY KEY,authority_id TEXT NOT NULL REFERENCES authority_configs(id),payload TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS authority_visit_orders(visit_id TEXT NOT NULL REFERENCES authority_visits(id),order_id TEXT NOT NULL REFERENCES orders(id),PRIMARY KEY(visit_id,order_id));
 CREATE TABLE IF NOT EXISTS attempts(key TEXT PRIMARY KEY,count INTEGER NOT NULL,until REAL NOT NULL);
 ''')
     if not c.execute('SELECT 1 FROM users LIMIT 1').fetchone() and not (DATA/'setup-code').exists():
@@ -70,6 +73,57 @@ def file_json(r):return {'id':r['id'],'name':r['name'],'order':r['order_id'],'ta
 def event(c,u,oid,action): c.execute('INSERT INTO events(order_id,actor_id,action,created) VALUES(?,?,?,?)',(oid,u['id'],action,stamp()))
 def version(r,body):require(isinstance(body.get('expectedVersion'),int) and r['version']==body['expectedVersion'],'Die Daten wurden zwischenzeitlich geändert. Bitte erneut versuchen.',409)
 
+ORDER_STATUSES=('Neu','Abgeholt','In Prüfung','Unterlagen fehlen','Vollständig geprüft','Bei Behörde','Fertig','Unterlagen zurück im Office','Ausgeliefert')
+STATUS_LABELS={'Neu':'Auftrag eingegangen','Abgeholt':'Unterlagen abgeholt','In Prüfung':'Office prüft Unterlagen','Bei Behörde':'Bei Zulassungsstelle abgegeben','Fertig':'Bei Zulassungsstelle abholbereit','Unterlagen zurück im Office':'Unterlagen zurück im Office','Ausgeliefert':'Zurückgeliefert'}
+def authority_week(value):
+    require(isinstance(value,str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',value),'Datum ungültig.')
+    day=date.fromisoformat(value)
+    return (day-timedelta(days=day.weekday())).isoformat()
+def authority_visits(c,aid=None):
+    rows=c.execute('SELECT * FROM authority_visits'+(' WHERE authority_id=?' if aid else '')+' ORDER BY rowid DESC',(aid,) if aid else ()).fetchall()
+    return [row_payload(r) for r in rows]
+def authority_visit_week(visit):return authority_week(visit.get('submittedDate',visit['date']) if visit['status']=='Abgegeben' else visit['date'])
+def authority_counter(c,config,day):
+    week=authority_week(day);visits=[v for v in authority_visits(c,config['id']) if v['kind']=='Händlerschalter' and v['status']!='Storniert' and authority_visit_week(v)==week]
+    submitted={oid for v in visits if v['status']=='Abgegeben' for oid in v['orderIds']}
+    reserved={oid for v in visits if v['status']=='Geplant' for oid in v['orderIds']}-submitted
+    limit=config.get('weeklyLimit')
+    return {'week':week,'submitted':len(submitted),'reserved':len(reserved),'remainingMinimum':max(0,config['weeklyMinimum']-len(submitted)),'remainingCapacity':max(0,limit-len(submitted|reserved)) if limit is not None else None}
+def authority_configs(c):return [row_payload(r) for r in c.execute('SELECT * FROM authority_configs ORDER BY rowid')]
+def authority_data(c,u):return {'authorities':authority_configs(c),'authorityVisits':authority_visits(c)} if staff(u) else {'authorities':[],'authorityVisits':[]}
+def authority_validate_visit(c,config,payload,exclude=None):
+    require(payload.get('kind') in ('Termin','Händlerschalter'),'Abgabeweg ungültig.')
+    require(payload['kind']==config['mode'],'Der gewählte Abgabeweg ist für diese Zulassungsstelle nicht aktiv.',409)
+    week=authority_week(payload.get('date'));clock=payload.get('time','')
+    require(isinstance(clock,str) and re.fullmatch(r'([01][0-9]|2[0-3]):[0-5][0-9]',clock),'Uhrzeit ungültig.')
+    for key,limit in (('confirmation',150),('address',500),('note',2000)):
+        require(isinstance(payload.get(key,''),str) and len(payload.get(key,''))<=limit,'Ungültiges Feld: '+key)
+    ids=payload.get('orderIds');require(isinstance(ids,list) and (0 if payload['kind']=='Termin' else 1)<=len(ids)<=200 and all(isinstance(oid,str) for oid in ids) and len(set(ids))==len(ids),'Bitte unterschiedliche Aufträge auswählen.')
+    for oid in ids:
+        order=c.execute('SELECT payload FROM orders WHERE id=?',(oid,)).fetchone();require(order,'Auftrag nicht gefunden.',404)
+        require(json.loads(order['payload'])['status'] not in ('Bei Behörde','Fertig','Unterlagen zurück im Office','Ausgeliefert'),'Dieser Vorgang befindet sich bereits bei der Zulassungsstelle oder ist abgeschlossen.',409)
+        duplicates=c.execute('SELECT v.id,v.payload FROM authority_visit_orders x JOIN authority_visits v ON v.id=x.visit_id WHERE x.order_id=?',(oid,)).fetchall()
+        require(not any(v['id']!=exclude and json.loads(v['payload'])['status']!='Storniert' for v in duplicates),'Ein Auftrag ist bereits einem Termin oder einer Abgabeliste zugeordnet.',409)
+    active=[v for v in authority_visits(c,config['id']) if v['id']!=exclude and v['status']!='Storniert']
+    require(not any(v['kind']!=payload['kind'] and authority_visit_week(v)==week for v in active),'Termin und Händlerschalter dürfen in derselben Woche nicht vermischt werden. Bitte mit der Zulassungsstelle abstimmen.',409)
+    if payload['kind']=='Termin':
+        require(not any(v['kind']=='Termin' and v['date']==payload['date'] and v['time']==clock for v in active),'Für diese Uhrzeit ist bereits ein Termin hinterlegt. Weitere Vorgänge bitte dem bestehenden Termin zuordnen.',409)
+    elif config.get('weeklyLimit') is not None:
+        already={oid for v in active if v['kind']=='Händlerschalter' and authority_visit_week(v)==week for oid in v['orderIds']}
+        require(len(already|set(ids))<=config['weeklyLimit'],'Die eingestellte Wochenkapazität ist ausgeschöpft.',409)
+def authority_link_orders(c,u,visit,previous_ids=()):
+    for oid in set(previous_ids)|set(visit['orderIds']):
+        row=c.execute('SELECT payload FROM orders WHERE id=?',(oid,)).fetchone();order=json.loads(row['payload'])
+        if visit['status']=='Storniert' or oid not in visit['orderIds']:
+            if order.get('authorityVisit',{}).get('id')==visit['id']:order.pop('authorityVisit',None)
+        else:
+            order['office']=visit['authorityName']
+            order['authorityVisit']={k:visit[k] for k in ('id','kind','date','time','status','authorityName')}
+            if visit['status']=='Abgegeben':
+                order['status']='Bei Behörde';order['authoritySubmittedAt']=visit['submittedAt'];order.setdefault('workflowTimes',{})['Bei Behörde']=visit['submittedAt']
+        c.execute('UPDATE orders SET payload=?,version=version+1 WHERE id=?',(json.dumps(order),oid))
+        event(c,u,oid,('Termin storniert / Abgabeliste verworfen' if visit['status']=='Storniert' else 'Bei Zulassungsstelle abgegeben' if visit['status']=='Abgegeben' else visit['kind']+' eingeplant')+' · '+visit['date']+' '+visit['time'])
+
 class Handler(BaseHTTPRequestHandler):
     server_version='PortalAPI'
     def log_message(self,fmt,*args):
@@ -106,6 +160,64 @@ class Handler(BaseHTTPRequestHandler):
         if not row or row['until']<=time.time():c.execute('INSERT OR REPLACE INTO attempts VALUES(?,1,?)',(key,time.time()+900))
         else:c.execute('UPDATE attempts SET count=count+1 WHERE key=?',(key,))
         c.commit()
+    def authority(self,c,u,p,method):
+        if not (p.startswith('/api/authorities') or p.startswith('/api/authority-visits')):return False
+        require(staff(u),'Nur Office darf Behördentermine und Abgabelisten verwalten.',403)
+        if p=='/api/authorities' and method=='PUT':
+            b=self.json();c.execute('BEGIN IMMEDIATE');name=b.get('name','');require(isinstance(name,str) and 1<=len(name.strip())<=150,'Name der Zulassungsstelle erforderlich.')
+            name=' '.join(name.split());aid=name.casefold();row=c.execute('SELECT * FROM authority_configs WHERE id=?',(aid,)).fetchone()
+            require(b.get('expectedVersion')==(row['version'] if row else 0),'Einstellungen wurden geändert. Bitte neu laden.',409)
+            mode=b.get('mode','Termin');minimum=b.get('weeklyMinimum',20);limit=b.get('weeklyLimit')
+            require(mode in ('Termin','Händlerschalter') and type(minimum) is int and 1<=minimum<=10000,'Abgabeweg oder Mindestmenge ungültig.')
+            require(limit is None or type(limit) is int and minimum<=limit<=10000,'Eine Wochenkapazität muss mindestens der Mindestmenge entsprechen.')
+            if row and mode!=json.loads(row['payload'])['mode']:
+                require(not any(v['status']=='Geplant' and v['kind']!=mode for v in authority_visits(c,aid)),'Bitte zuerst offene Planungen des bisherigen Abgabewegs erledigen oder stornieren.',409)
+            payload={'id':aid,'name':name,'mode':mode,'weeklyMinimum':minimum,'weeklyLimit':limit}
+            if limit is not None:
+                weeks={authority_visit_week(v) for v in authority_visits(c,aid) if v['kind']=='Händlerschalter' and v['status']!='Storniert'}
+                require(all(sum(authority_counter(c,{**payload,'weeklyLimit':None},w)[k] for k in ('submitted','reserved'))<=limit for w in weeks if w>=authority_week(date.today().isoformat())),'Die Kapazität ist kleiner als bereits eingeplante Vorgänge.',409)
+            next_version=(row['version'] if row else 0)+1
+            c.execute('INSERT INTO authority_configs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,version=excluded.version',(aid,json.dumps(payload),next_version))
+            self.reply(data={**payload,'_version':next_version});return True
+        if p=='/api/authorities/counter' and method=='GET':
+            q=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query);aid=q.get('id',[''])[0];row=c.execute('SELECT * FROM authority_configs WHERE id=?',(aid,)).fetchone();require(row,'Zulassungsstelle nicht gefunden.',404)
+            self.reply(data=authority_counter(c,row_payload(row),q.get('date',[date.today().isoformat()])[0]));return True
+        if p=='/api/authority-visits' and method=='POST':
+            b=self.json();c.execute('BEGIN IMMEDIATE');row=c.execute('SELECT * FROM authority_configs WHERE id=?',(b.get('authorityId'),)).fetchone();require(row,'Bitte zunächst die Zulassungsstelle speichern.')
+            config=row_payload(row);payload={k:b[k] for k in ('kind','date','time','orderIds','confirmation','address','note') if k in b};authority_validate_visit(c,config,payload)
+            payload.update(id='Z-'+uuid.uuid4().hex[:12],authorityId=config['id'],authorityName=config['name'],status='Geplant',createdAt=stamp())
+            c.execute('INSERT INTO authority_visits VALUES(?,?,?,1)',(payload['id'],config['id'],json.dumps(payload)))
+            c.executemany('INSERT INTO authority_visit_orders VALUES(?,?)',[(payload['id'],oid) for oid in payload['orderIds']]);authority_link_orders(c,u,payload)
+            self.reply(201,{**payload,'_version':1});return True
+        m=re.fullmatch(r'/api/authority-visits/([^/]+)',p)
+        if m and method=='PATCH':
+            b=self.json();c.execute('BEGIN IMMEDIATE');row=c.execute('SELECT * FROM authority_visits WHERE id=?',(m[1],)).fetchone();require(row,'Planung nicht gefunden.',404);version(row,b)
+            old=row_payload(row);require(old['status']=='Geplant','Abgegebene oder stornierte Planungen können nicht geändert werden.',409)
+            action=b.get('action');payload={k:v for k,v in old.items() if k!='_version'}
+            if action=='update':
+                patch=b.get('patch',{});require(isinstance(patch,dict) and set(patch)<=set(('date','time','orderIds','confirmation','address','note')),'Ungültige Änderungen.')
+                payload.update(patch);config=row_payload(c.execute('SELECT * FROM authority_configs WHERE id=?',(row['authority_id'],)).fetchone());authority_validate_visit(c,config,payload,old['id'])
+                c.execute('DELETE FROM authority_visit_orders WHERE visit_id=?',(old['id'],));c.executemany('INSERT INTO authority_visit_orders VALUES(?,?)',[(old['id'],oid) for oid in payload['orderIds']])
+            elif action=='cancel':payload.update(status='Storniert',cancelledAt=stamp())
+            elif action=='submit':
+                require(payload['orderIds'],'Bitte der Planung zuerst Vorgänge zuordnen.',409)
+                require(payload['date']<=date.today().isoformat(),'Eine zukünftige Abgabe kann noch nicht bestätigt werden.',409)
+                for oid in payload['orderIds']:
+                    order=json.loads(c.execute('SELECT payload FROM orders WHERE id=?',(oid,)).fetchone()['payload'])
+                    require(not c.execute("SELECT 1 FROM files WHERE order_id=? AND purpose='document' AND status NOT IN ('Freigegeben','Geprüft')",(oid,)).fetchone(),'Die Dokumentenprüfung ist noch nicht abgeschlossen.',409)
+                    require(order['status']=='Vollständig geprüft','Vor der Abgabe müssen alle zugeordneten Aufträge vollständig geprüft sein.',409)
+                config=row_payload(c.execute('SELECT * FROM authority_configs WHERE id=?',(row['authority_id'],)).fetchone())
+                today=date.today().isoformat();week=authority_week(today);others=[v for v in authority_visits(c,row['authority_id']) if v['id']!=old['id'] and v['status']!='Storniert' and authority_visit_week(v)==week]
+                require(payload['kind']==config['mode'],'Der Abgabeweg ist nicht mehr aktiv.',409)
+                require(not any(v['kind']!=payload['kind'] for v in others),'Termin und Händlerschalter dürfen in derselben Woche nicht vermischt werden.',409)
+                if payload['kind']=='Händlerschalter' and config.get('weeklyLimit') is not None:
+                    reserved={oid for v in others for oid in v['orderIds']}
+                    require(len(reserved|set(payload['orderIds']))<=config['weeklyLimit'],'Für die tatsächliche Abgabewoche sind keine Plätze mehr frei.',409)
+                payload.update(status='Abgegeben',submittedAt=stamp(),submittedDate=today)
+            else:raise Problem(400,'Aktion ungültig.')
+            c.execute('UPDATE authority_visits SET payload=?,version=version+1 WHERE id=?',(json.dumps(payload),old['id']));authority_link_orders(c,u,payload,old['orderIds'])
+            self.reply(data={**payload,'_version':old['_version']+1});return True
+        raise Problem(404,'Endpunkt nicht gefunden.')
     def handle_api(self):
         route=urllib.parse.urlparse(self.path);p=route.path;method=self.command
         if method in ('POST','PATCH','PUT','DELETE'):require(self.headers.get('Origin')==ORIGIN,'Anfrage aus nicht erlaubter Herkunft.',403)
@@ -133,6 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                 if p.endswith('/setup'):(DATA/'setup-code').unlink(missing_ok=True)
                 self.reply(data={'user':safe_user(u)},cookie=cookie);return
             u=self.auth(c)
+            if self.authority(c,u,p,method):return
             if p=='/api/auth/logout' and method=='POST':
                 for v in self.headers.get('Cookie','').split(';'):
                     if v.strip().startswith('tq_session='):c.execute('DELETE FROM sessions WHERE token_hash=?',(digest(v.strip().split('=',1)[1]),))
@@ -145,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
                 states={r['key']:{'value':json.loads(r['value']),'version':r['version']} for r in c.execute('SELECT * FROM states WHERE user_id=?',(u['id'],))}
                 people=[safe_user(r) for r in c.execute('SELECT * FROM users WHERE active=1')] if staff(u) else []
                 events=[{**dict(r),'read':r['actor_id']==u['id'] or bool(c.execute('SELECT 1 FROM reads WHERE user_id=? AND event_id=?',(u['id'],r['id'])).fetchone())} for r in c.execute('SELECT e.id,e.order_id,e.actor_id,e.action,e.created,u.name AS actorName FROM events e JOIN users u ON u.id=e.actor_id ORDER BY e.id DESC LIMIT 200') if r['order_id'] in ids]
-                self.reply(data={'user':safe_user(u),'orders':orders,'stops':[row_payload(r) for r in tasks],'handovers':hands,'files':files,'states':states,'people':people,'events':events});return
+                self.reply(data={'user':safe_user(u),'orders':orders,'stops':[row_payload(r) for r in tasks],'handovers':hands,'files':files,'states':states,'people':people,'events':events,**authority_data(c,u)});return
             if p=='/api/users' and method=='POST':
                 require(u['role']=='admin','Nur Administratoren dürfen Konten anlegen.',403);b=self.json();role=b.get('role');name=str(b.get('name','')).strip();require(role in ('office','dealer','driver') and 1<=len(name)<=150,'Name oder Rolle ungültig.')
                 token=secrets.token_urlsafe(32);uid=uuid.uuid4().hex;c.execute('INSERT INTO users(id,name,role,invite_hash,invite_expires) VALUES(?,?,?,?,?)',(uid,name,role,digest(token),time.time()+86400));self.reply(201,{'id':uid,'invitation':ORIGIN+('/haendler' if role=='dealer' else '/fahrer' if role=='driver' else '/')+'?einladung='+token});return
@@ -175,9 +288,18 @@ class Handler(BaseHTTPRequestHandler):
                 if staff(u):allowed|={'status','employee','plateStatus'}
                 else:require(old['status'] in ('Neu','Unterlagen fehlen'),'Dieser Auftrag wird bereits bearbeitet.',409)
                 require(set(patch)<=allowed,'Diese Felder dürfen Sie nicht ändern.',403)
+                if 'office' in patch and old.get('authorityVisit'):require(patch['office']==old['authorityVisit']['authorityName'],'Bitte die bestehende Terminzuordnung zuerst stornieren.',409)
                 if 'plateStatus' in patch:require(patch['plateStatus'] in ('Offen','In Vorbereitung','In Produktion','Fertig','Zur Abholung','Abgeholt'),'Ungültiger Produktionsstatus.')
-                if 'status' in patch:require(patch['status'] in ('Neu','Abgeholt','In Prüfung','Unterlagen fehlen','Bei Behörde','Fertig','Ausgeliefert'),'Ungültiger Status.')
-                payload={**old,**patch};validate_order(payload);c.execute('UPDATE orders SET payload=?,version=version+1 WHERE id=?',(json.dumps(payload),r['id']));event(c,u,r['id'],'Auftrag aktualisiert'+(' · '+patch['status'] if 'status' in patch else ''));self.reply(data={**payload,'dealerId':r['dealer_id'],'_version':r['version']+1});return
+                if 'status' in patch:require(patch['status'] in ORDER_STATUSES,'Ungültiger Status.')
+                payload={**old,**patch};validate_order(payload)
+                if 'status' in patch:
+                    if patch['status']=='Vollständig geprüft':
+                        require(not c.execute("SELECT 1 FROM files WHERE order_id=? AND purpose='document' AND status NOT IN ('Freigegeben','Geprüft')",(r['id'],)).fetchone(),'Bitte hochgeladene Unterlagen zuerst prüfen und freigeben.',409)
+                    if patch['status']=='Bei Behörde':require(old.get('authorityVisit',{}).get('status')=='Abgegeben','Bitte die Abgabe im Bereich Zulassungsstelle bestätigen.',409)
+                    if patch['status']=='Fertig':require(old['status']=='Bei Behörde','Bitte zunächst die Abgabe bei der Zulassungsstelle erfassen.',409)
+                    if patch['status']=='Unterlagen zurück im Office':require(old['status']=='Fertig','Bitte zunächst die Abholbereitschaft erfassen.',409)
+                    payload.setdefault('workflowTimes',{})[patch['status']]=stamp()
+                c.execute('UPDATE orders SET payload=?,version=version+1 WHERE id=?',(json.dumps(payload),r['id']));event(c,u,r['id'],'Auftrag aktualisiert'+(' · '+STATUS_LABELS.get(patch['status'],patch['status']) if 'status' in patch else ''));self.reply(data={**payload,'dealerId':r['dealer_id'],'_version':r['version']+1});return
             m=re.fullmatch(r'/api/orders/([^/]+)/assign',p)
             if m and method=='POST':
                 require(staff(u),'Nur Office darf Fahrer zuweisen.',403);b=self.json();c.execute('BEGIN IMMEDIATE');r=order_access(c,u,m[1]);require(str(b.get('tour',1)).isdigit() and 1<=int(b.get('tour',1))<=100,'Ungültige Tour.');d=c.execute('SELECT * FROM users WHERE id=? AND role=? AND active=1',(b.get('driverId'),'driver')).fetchone();require(d,'Fahrer nicht gefunden.');require(b.get('type') in ('Abholung','Übergabe') and isinstance(b.get('address'),str) and b['address'].strip(),'Art und Adresse erforderlich.')
@@ -196,8 +318,10 @@ class Handler(BaseHTTPRequestHandler):
                     h=c.execute('SELECT payload FROM handovers WHERE task_id=?',(r['id'],)).fetchone();require(h and json.loads(h['payload'])['status']=='Bestätigt','Bitte zuerst die Übergabe bestätigen.',409)
                 payload={**old,'status':s};payload.update({'arrivedAt':datetime.now().strftime('%H:%M')} if s=='Angekommen' else {'completedAt':datetime.now().strftime('%H:%M')} if s=='Erledigt' else {})
                 c.execute('UPDATE tasks SET payload=?,version=version+1 WHERE id=?',(json.dumps(payload),r['id']))
-                if s=='Erledigt':
-                    o=c.execute('SELECT payload FROM orders WHERE id=?',(r['order_id'],)).fetchone();op=json.loads(o['payload']);op['status']='Abgeholt' if old['type']=='Abholung' else 'Ausgeliefert';c.execute('UPDATE orders SET payload=?,version=version+1 WHERE id=?',(json.dumps(op),r['order_id']))
+                if s=='Erledigt' and old['status']!='Erledigt':
+                    o=c.execute('SELECT payload FROM orders WHERE id=?',(r['order_id'],)).fetchone();op=json.loads(o['payload']);
+                    if old['type']!='Abholung' or op['status'] in ('Neu','Abgeholt'):op['status']='Abgeholt' if old['type']=='Abholung' else 'Ausgeliefert'
+                    op.setdefault('workflowTimes',{})[op['status']]=stamp();c.execute('UPDATE orders SET payload=?,version=version+1 WHERE id=?',(json.dumps(op),r['order_id']))
                 event(c,u,r['order_id'],old['type']+' · '+s);self.reply(data={**payload,'_version':r['version']+1});return
             m=re.fullmatch(r'/api/handovers/([^/]+)',p)
             if m and method=='PATCH':
@@ -218,7 +342,14 @@ class Handler(BaseHTTPRequestHandler):
                 mime=self.headers.get_content_type();require(mime in ('application/pdf','image/png','image/jpeg','image/webp','image/heic','image/heif'),'Dateityp nicht unterstützt.',415);require(purpose!='proof' or mime.startswith('image/'),'Nachweis muss ein Bild sein.')
                 raw=self.body(10*1024*1024);magic={'application/pdf':raw.startswith(b'%PDF-'),'image/png':raw.startswith(b'\x89PNG\r\n\x1a\n'),'image/jpeg':raw.startswith(b'\xff\xd8\xff'),'image/webp':raw.startswith(b'RIFF') and raw[8:12]==b'WEBP','image/heic':raw[4:8]==b'ftyp','image/heif':raw[4:8]==b'ftyp'};require(magic[mime],'Dateiinhalt passt nicht zum Dateityp.')
                 name=Path(urllib.parse.unquote(self.headers.get('X-File-Name','Dokument'))).name;name=re.sub(r'[\x00-\x1f\x7f]','',name)[:200] or 'Dokument';fid=uuid.uuid4().hex;path=DATA/'files'/fid;path.write_bytes(raw);os.chmod(path,0o600)
-                try:c.execute('INSERT INTO files(id,order_id,task_id,owner_id,name,mime,size,purpose,created) VALUES(?,?,?,?,?,?,?,?,?)',(fid,oid,tid,u['id'],name,mime,len(raw),purpose,stamp()));event(c,u,oid,'Nachweis hochgeladen' if purpose=='proof' else 'Dokument hochgeladen');c.commit()
+                try:c.execute('INSERT INTO files(id,order_id,task_id,owner_id,name,mime,size,purpose,created) VALUES(?,?,?,?,?,?,?,?,?)',(fid,oid,tid,u['id'],name,mime,len(raw),purpose,stamp()));event(c,u,oid,'Nachweis hochgeladen' if purpose=='proof' else 'Dokument hochgeladen')
+                except Exception:path.unlink(missing_ok=True);raise
+                try:
+                    if purpose=='document':
+                        order=json.loads(c.execute('SELECT payload FROM orders WHERE id=?',(oid,)).fetchone()['payload'])
+                        if order['status']=='Vollständig geprüft':
+                            order['status']='In Prüfung';c.execute('UPDATE orders SET payload=?,version=version+1 WHERE id=?',(json.dumps(order),oid));event(c,u,oid,'Neue Unterlagen – erneute Office-Prüfung erforderlich')
+                    c.commit()
                 except Exception:path.unlink(missing_ok=True);raise
                 self.reply(201,file_json(c.execute('SELECT * FROM files WHERE id=?',(fid,)).fetchone()));return
             m=re.fullmatch(r'/api/files/([^/]+)/content',p)

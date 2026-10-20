@@ -2,12 +2,12 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { LogOut, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
 export type RecordData={id:string;_version?:number;[key:string]:any};
 type UserData={id:string;username:string|null;name:string;role:'admin'|'office'|'dealer'|'driver'};
-type Snapshot={user:UserData;orders:RecordData[];stops:RecordData[];handovers:RecordData[];files:RecordData[];people:UserData[];states:Record<string,{value:any;version:number}>;events:RecordData[]};
+type Snapshot={user:UserData;orders:RecordData[];stops:RecordData[];handovers:RecordData[];files:RecordData[];people:UserData[];states:Record<string,{value:any;version:number}>;events:RecordData[];authorities:RecordData[];authorityVisits:RecordData[]};
 type PortalContext={data:Snapshot;refresh:()=>Promise<void>;updateList:(key:'orders'|'stops'|'handovers'|'files',next:any)=>void;saveState:(key:string,next:any,initial:any)=>void;request:(url:string,options?:RequestInit)=>Promise<any>;notify:(s:string)=>void;logout:()=>Promise<void>};
 export const Context=createContext<PortalContext|null>(null);
 export const usePortal=()=>{const c=useContext(Context);if(!c)throw Error('Portal provider missing');return c};
 const routeFor=(role:string)=>role==='dealer'?'/haendler':role==='driver'?'/fahrer':'/';
-const blank=(user:UserData):Snapshot=>({user,orders:[],stops:[],handovers:[],files:[],people:[],states:{},events:[]});
+const blank=(user:UserData):Snapshot=>({user,orders:[],stops:[],handovers:[],files:[],people:[],states:{},events:[],authorities:[],authorityVisits:[]});
 async function request(url:string,options:RequestInit={}){const r=await fetch(url,{...options,credentials:'same-origin',headers:{...(options.body&&typeof options.body==='string'?{'Content-Type':'application/json'}:{}),...options.headers}});const value=await r.json();if(!r.ok)throw new Error(value.error||'Anfrage fehlgeschlagen');return value}
 export function PortalGate({children}:{children:React.ReactNode}){
  const [user,setUser]=useState<UserData|null>(null);const [setup,setSetup]=useState(false);const [loading,setLoading]=useState(true);const [error,setError]=useState('');const [form,setForm]=useState({username:'',password:'',name:'',code:''});const invite=new URLSearchParams(location.search).get('einladung');

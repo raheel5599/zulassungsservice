@@ -42,3 +42,13 @@ DATA_DIR=/tmp/tariq-portal-dev PUBLIC_ORIGIN=http://localhost:5173 COOKIE_SECURE
 In another terminal run `npm run dev -- --host localhost`; Vite proxies `/api` to localhost:8000. Production always uses HTTPS and secure cookies. Do not use test passwords or fixtures in production.
 
 Compose starts the API health check before nginx. GitHub Actions builds and tests the frontend and API; production deployment updates the existing Hetzner Compose project and Caddy configuration. Port 8091 is bound to loopback only.
+
+## Zulassungsstelle, Termine und Wochenzähler
+
+Office has a dedicated Zulassungsstelle section. Save an externally booked appointment (date/time, authority, booking reference, address, notes) even before orders exist; attach orders later. Create prepared hand-in lists in Händlerschalter mode and print a per-case hand-in manifest. These records are shared across Office accounts; dealers and drivers receive only their own order's visit summary.
+
+The default 20 cases/week is a minimum, not a capacity. The counter separately shows reserved cases, actual submitted cases and the remaining minimum. A configurable optional weekly limit enables remaining-capacity tracking and is enforced atomically, including concurrent reservations. Cancelled records and regular appointments do not count toward the Händlerschalter minimum. Weeks run Monday–Sunday in the German operating calendar; delayed submissions count in their actual submission week. No upper limit is assumed if none has been entered.
+
+Each authority has one active operating mode. Open plans prevent switching modes; appointments and Händlerschalter cases cannot be mixed in one authority's operating week. Confirm a change with the authority. Existing history is retained. Planning is not an external appointment booking or a guarantee of same-day processing.
+
+The order workflow now distinguishes collection from customers, Office review, fully checked, authority submission, readiness for collection at the authority, return to Office and delivery to the customer. Submission requires fully checked assigned cases and reviewed uploads. Uploading new documents reopens a completed Office review. Recording readiness does not automatically complete a return delivery. Existing accounts, orders and documents are preserved by additive SQLite tables.
