@@ -24,6 +24,12 @@ for(const populated of [false,true])for(const role of ['admin','dealer','driver'
   const html=renderToString(React.createElement(Context.Provider,{value},React.createElement(Component,{section:page,onOpenOrder(){}})));
   if(html.includes('undefined')||html.length<100)throw Error('Invalid rendered content: '+role+' '+page+' populated='+populated);
   if(role==='admin'&&populated&&page==='Dashboard'&&!html.includes('Test Fahrzeug'))throw Error('Office does not render canonical order');
+  if(role==='admin'&&page==='Zulassungsstelle'){
+   if(html.includes('<dialog'))throw Error('Planning overview is obscured by an automatic form');
+   const editor=renderToString(React.createElement(Context.Provider,{value:{...value,data:{...data,authorityVisits:[]}}},React.createElement(AuthorityWorkspace,{initialOrderId:id,onOpenOrder(){}})));
+   if(!editor.includes('<dialog')||!editor.includes(populated?'Termin &amp; Ort':'Wie gibst du die Unterlagen ab?'))throw Error('Order planning does not open the correct dialog');
+   if(populated&&!editor.includes('checked=""'))throw Error('Order is not preselected in the appointment editor');
+  }
   count++;
  }
 }
