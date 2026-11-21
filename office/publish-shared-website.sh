@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-web=tariq-websites
+web=tariq-frontend
+if ! docker container inspect "$web" >/dev/null 2>&1; then
+  web=tariq-websites
+fi
 caddy=fahrschulpilot-caddy-1
 domain=zulassung.tariq-itconsulting.de
 volume=tariq-websites-public
@@ -68,7 +71,7 @@ if ! docker exec "$web" test -f /etc/nginx/conf.d/tariq-zulassung.conf; then
 
   docker stop "$web" >/dev/null
   docker rename "$web" "$previous" || { docker start "$web" >/dev/null; exit 1; }
-  if ! docker create --name "$web" --restart unless-stopped --network fahrschulpilot_web \
+  if ! docker create --name "$web" --restart unless-stopped --network fahrschulpilot_web --network-alias tariq-websites \
        --mount "type=volume,src=$volume,dst=$root" "$next" >/dev/null ||
      ! docker network connect office_backend "$web" ||
      ! docker start "$web" >/dev/null; then

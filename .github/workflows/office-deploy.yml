@@ -73,6 +73,7 @@ jobs:
           cd office
           bash deploy-backend.sh
           bash publish-shared-website.sh "$stage/dist"
+          bash rename-shared-frontend.sh
 
           legacy=office-tariq-office-1
           if docker container inspect "$legacy" >/dev/null 2>&1; then
