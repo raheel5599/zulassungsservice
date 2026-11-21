@@ -49,19 +49,41 @@ jobs:
           printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" 'set -eu
-            mkdir -p /opt/tariq-zulassungsservice
-            if [ ! -d /opt/tariq-zulassungsservice/.git ]; then
-              git clone https://github.com/raheel5599/zulassungsservice.git /opt/tariq-zulassungsservice
+          set -euo pipefail
+          target="$USER@$HOST"
+          remote_dir=$(ssh -o StrictHostKeyChecking=yes "$target" 'mktemp -d /tmp/tariq-office-build.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/tmp/tariq-office-build\.[A-Za-z0-9]+$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -s office/dist/index.html
+          tar -czf /tmp/tariq-office-dist.tar.gz -C office/dist .
+          scp -o StrictHostKeyChecking=yes /tmp/tariq-office-dist.tar.gz "$target:$remote_dir/site.tar.gz"
+          ssh -o StrictHostKeyChecking=yes "$target" "bash -se -- $remote_dir $GITHUB_SHA" <<'REMOTE'
+          stage=$1
+          commit=$2
+          trap 'rm -rf -- "$stage"' EXIT
+          mkdir "$stage/dist"
+          tar -xzf "$stage/site.tar.gz" -C "$stage/dist"
+          mkdir -p /opt/tariq-zulassungsservice
+          if [ ! -d /opt/tariq-zulassungsservice/.git ]; then
+            git clone https://github.com/raheel5599/zulassungsservice.git /opt/tariq-zulassungsservice
+          fi
+          cd /opt/tariq-zulassungsservice
+          git fetch origin main
+          git checkout --detach "$commit"
+          cd office
+          bash deploy-backend.sh
+          bash publish-shared-website.sh "$stage/dist"
+
+          legacy=office-tariq-office-1
+          if docker container inspect "$legacy" >/dev/null 2>&1; then
+            test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$legacy")" = office
+            test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$legacy")" = tariq-office
+            if [ "$(docker inspect --format '{{.State.Running}}' "$legacy")" = true ]; then
+              docker stop "$legacy" >/dev/null
             fi
-            cd /opt/tariq-zulassungsservice
-            git fetch origin main
-            git checkout -B main origin/main
-            cd office
-            bash deploy-backend.sh
-            docker compose -f compose.yml ps
-            echo "Checking the portal API through nginx"
-            test "$(curl -fsS --max-time 10 http://127.0.0.1:8091/api/health)" = "{\"ok\": true}"
-            bash publish-shared-website.sh
-            test "$(curl -fsS --max-time 10 --resolve zulassung.tariq-itconsulting.de:443:127.0.0.1 https://zulassung.tariq-itconsulting.de/api/health)" = "{\"ok\": true}"
-          '
+            test "$(docker inspect --format '{{.State.Running}}' "$legacy")" = false
+          fi
+          actual=$(curl -fsS --max-time 10 --resolve zulassung.tariq-itconsulting.de:443:127.0.0.1 https://zulassung.tariq-itconsulting.de/api/health)
+          printf '%s' "$actual" | python3 -c 'import json,sys; sys.exit(not json.load(sys.stdin).get("ok"))'
+          echo 'Zulassungs-API über HTTPS geprüft; separater Office-Webcontainer aus.'
+          REMOTE

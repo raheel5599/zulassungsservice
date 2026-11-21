@@ -6,7 +6,8 @@ caddy=fahrschulpilot-caddy-1
 domain=zulassung.tariq-itconsulting.de
 volume=tariq-websites-public
 root=/srv/public-sites
-source=office-tariq-office-1
+site_dir=$(realpath "${1:?Build-Verzeichnis fehlt}")
+test -s "$site_dir/index.html"
 stamp=$(date -u +%Y%m%d%H%M%S%N)
 work=$(mktemp -d)
 preview="tariq-websites-zulassung-check-$stamp"
@@ -42,9 +43,7 @@ PY
 
 release=".zulassung-$stamp"
 docker exec "$web" mkdir "$root/$release"
-mkdir "$work/site"
-docker cp "$source:/usr/share/nginx/html/." "$work/site/"
-docker cp "$work/site/." "$web:$root/$release/"
+docker cp "$site_dir/." "$web:$root/$release/"
 docker exec "$web" test -s "$root/$release/index.html"
 
 if ! docker exec "$web" test -f /etc/nginx/conf.d/tariq-zulassung.conf; then
@@ -88,7 +87,7 @@ docker exec "$web" sh -eu -c '
   mv -Tf "$3-link" "$2"
 ' sh "$root" "$domain" "$release"
 if ! docker exec "$caddy" wget -qO- --header "Host: $domain" "http://$web/" > "$work/shared.html" ||
-   ! cmp "$work/site/index.html" "$work/shared.html" ||
+   ! cmp "$site_dir/index.html" "$work/shared.html" ||
    ! docker exec "$caddy" wget -qO- --header "Host: $domain" "http://$web/api/health" |
       grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'; then
   if [[ -n "$prior_release" ]]; then
