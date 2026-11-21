@@ -105,7 +105,7 @@ if ! cmp -s "$work/candidate" "$work/original"; then
   cp -p "$cfg" "$backup"
   cat "$work/candidate" > "$cfg"
   if ! docker restart "$caddy" >/dev/null ||
-     ! curl -fsS --retry 5 --retry-connrefused --max-time 8 --resolve "$domain:443:127.0.0.1" "https://$domain/api/health" -o /dev/null; then
+     ! curl -fsS --retry 8 --retry-all-errors --retry-delay 2 --max-time 8 --resolve "$domain:443:127.0.0.1" "https://$domain/api/health" -o /dev/null; then
     cat "$backup" > "$cfg"
     docker restart "$caddy" >/dev/null
     exit 1
