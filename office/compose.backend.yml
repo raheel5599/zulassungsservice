@@ -1,0 +1,36 @@
+name: tariq-backend
+services:
+  zulassung-api:
+    build:
+      context: ./api
+    container_name: office-api-1
+    restart: unless-stopped
+    environment:
+      PUBLIC_ORIGIN: https://zulassung.tariq-itconsulting.de
+      COOKIE_SECURE: "1"
+      TZ: Europe/Berlin
+    volumes:
+      - portal_data:/data
+    networks:
+      backend:
+        aliases:
+          - tariq-zulassung-api
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+networks:
+  backend:
+    external: true
+    name: office_backend
+volumes:
+  portal_data:
+    external: true
+    name: office_portal_data
